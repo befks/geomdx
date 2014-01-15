@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<project name="GeoMDX" default="jars" basedir=".">
+
+	<target name="init">
+     <mkdir dir="../build"/>
+     <mkdir dir="../dist"/>
+     <path id="classpath">
+      <fileset dir="../lib" includes="**/*.jar"/>
+      <pathelement location="../build"/>
+     </path>
+    </target>
+
+	<target name="jars" depends="mdxjar,gtjar" />
+	
+    <target name="compile" depends="init">
+     <javac srcdir="java" destdir="../build" debug="on" debuglevel="source,lines,vars" source="1.6" target="1.6" includeantruntime="false" encoding="utf8">
+      <classpath refid="classpath"/>
+     </javac>
+	</target>
+	
+    <target name="mdxjar" depends="compile">
+     <jar jarfile="../dist/geomdx-1.0.jar">
+      <fileset dir="../build" includes="it/**" />
+     </jar>
+ 	</target>
+    	
+    <target name="gtjar" depends="compile">
+     <jar jarfile="../dist/gt-mdx-1.0.jar">
+      <fileset dir="../build" includes="org/**" />
+      <fileset dir="resources/gt-mdx" includes="*/**" />
+     </jar>
+    </target>
+	
+</project>

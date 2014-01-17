@@ -50,6 +50,9 @@ public class MDXCachedDataStore extends AbstractDataStore
     /** Column name containing the name of the geometry column. */
     private static String COLUMNATTRIBUTE = "GeometryColumn";
 
+    /** Column name containing the type of the geometry column. */
+    private static String COLUMNTYPE = "ColumnType";
+
     /** Defines the row axis of the olap result set. */
     public static int ROWAXIS = 1;
 
@@ -86,6 +89,9 @@ public class MDXCachedDataStore extends AbstractDataStore
     /** The active connection. */
     private OlapConnection connection = null;
 
+    /** The processor to use, if any. */
+    private MDXGeometryProcessor processor = null;
+
     // ===========================================================================
     /**
      * Creates an instance.
@@ -99,7 +105,8 @@ public class MDXCachedDataStore extends AbstractDataStore
      * @param srid The SRID to use.
      * @param refresh The amount of hours data can remain cached. (<= 0 is no cache).
      */
-    public MDXCachedDataStore(String olapServer, String olapProvider, String olapDataSource, String olapCatalog, String olapUser, String olapPassword, String srid, int refresh)
+    public MDXCachedDataStore(String olapServer, String olapProvider, String olapDataSource, String olapCatalog, String olapUser, String olapPassword,
+                              String srid, int refresh, MDXGeometryProcessor processor)
     {
         super(false); // does not allow writing
 
@@ -111,6 +118,7 @@ public class MDXCachedDataStore extends AbstractDataStore
         this.olapUser = olapUser;
         this.refresh = refresh;
         this.srid = srid;
+        this.processor = processor;
 
         loadCatalogEntries();
     }
@@ -152,6 +160,7 @@ public class MDXCachedDataStore extends AbstractDataStore
             if (connection != null)
             {
                 connection.close();
+                catalog.clear();
                 LOGGER.fine("Connection with the MDX data source " + olapDataSource + " closed");
             }
         }
@@ -175,6 +184,7 @@ public class MDXCachedDataStore extends AbstractDataStore
     @Override
     public FeatureReader<SimpleFeatureType, SimpleFeature> getFeatureReader(Query query, Transaction transaction) throws IOException
     {
+        loadCatalogEntries();
         MDXCatalogEntry entry = catalog.get(query.getTypeName());
         MDXDataCache cache = entry.getCache();
         return new MDXCachedFeatureReader(cache.getFeatures(query.getFilter()), cache.getFeatureType());
@@ -184,6 +194,7 @@ public class MDXCachedDataStore extends AbstractDataStore
     @Override
     public SimpleFeatureSource getFeatureSource(String typeName) throws IOException
     {
+        loadCatalogEntries();
         MDXCatalogEntry entry = catalog.get(typeName);
         if (entry != null) return new MDXCachedFeatureSource(this, entry.getCache());
         else return null;
@@ -193,6 +204,7 @@ public class MDXCachedDataStore extends AbstractDataStore
     @Override
     public SimpleFeatureType getSchema(String typeName) throws IOException
     {
+        loadCatalogEntries();
         MDXCatalogEntry entry = catalog.get(typeName);
         if (entry != null) return entry.getSchema();
         else return null;
@@ -202,6 +214,7 @@ public class MDXCachedDataStore extends AbstractDataStore
     @Override
     public String[] getTypeNames() throws IOException
     {
+        loadCatalogEntries();
         return catalog.keySet().toArray(new String[catalog.size()]);
     }
 
@@ -209,6 +222,7 @@ public class MDXCachedDataStore extends AbstractDataStore
     @Override
     protected FeatureReader<SimpleFeatureType, SimpleFeature> getFeatureReader(String typeName) throws IOException
     {
+        loadCatalogEntries();
         MDXCatalogEntry entry = catalog.get(typeName);
         MDXDataCache cache = entry.getCache();
         return new MDXCachedFeatureReader(cache.getFeatures(), cache.getFeatureType());
@@ -218,6 +232,7 @@ public class MDXCachedDataStore extends AbstractDataStore
     @Override
     protected FeatureReader<SimpleFeatureType, SimpleFeature> getFeatureReader(String typeName, Query query) throws IOException
     {
+        loadCatalogEntries();
         MDXCatalogEntry entry = catalog.get(typeName);
         MDXDataCache cache = entry.getCache();
         return new MDXCachedFeatureReader(cache.getFeatures(query.getFilter()), cache.getFeatureType());
@@ -227,39 +242,47 @@ public class MDXCachedDataStore extends AbstractDataStore
     /**
      * Loads the catalog entries.
      */
-    private void loadCatalogEntries()
+    private synchronized void loadCatalogEntries()
     {
-        connect();
-        catalog.clear();
-        OlapStatement statement;
-
-        try
+        if (catalog.isEmpty())
         {
-            statement = this.connection.createStatement();
-            CellSet catResult = statement.executeOlapQuery("select {[Measures].[MDX]} ON COLUMNS, "
-                                                         + "Filter({Crossjoin([Name].Children, [MDX].Children) * "
-                                                         + "Crossjoin([GeometryType].Children, [GeometryColumn].Children)}, "
-                                                         + "[Measures].[MDX] = 1) ON ROWS " + "from [QueryCatalog]");
+            connect();
+            catalog.clear();
+            OlapStatement statement;
 
-            CellSetAxis rowAxis = catResult.getAxes().get(ROWAXIS);
-            for (Position rowPos : rowAxis.getPositions())
+            try
             {
-                MDXCatalogEntry entry = new MDXCatalogEntry();
-                for (Member member : rowPos.getMembers())
-                {
-                    entry.addAttribute((String) (member.getDimension().getName()), member.getName());
-                }
+                /**
+                 * SELECT NON EMPTY {Hierarchize({[Measures].[MDX]})} ON COLUMNS,
+NON EMPTY CrossJoin([Name].[Name].Members, CrossJoin([MDX].[MDX].Members, CrossJoin([GeometryColumn].[GeometryColumn].Members, CrossJoin([ColumnType].[ColumnType].Members, [GeometryType].[GeometryType].Members)))) ON ROWS FROM [QueryCatalog]
+                 */
+                statement = this.connection.createStatement();
+                CellSet catResult = statement.executeOlapQuery("SELECT NON EMPTY {Hierarchize({[Measures].[MDX]})} ON COLUMNS, "
+                        + "NON EMPTY CrossJoin([Name].[Name].Members, CrossJoin([MDX].[MDX].Members, "
+                        + "CrossJoin([GeometryColumn].[GeometryColumn].Members, CrossJoin([ColumnType].[ColumnType].Members, "
+                        + "[GeometryType].[GeometryType].Members)))) ON ROWS FROM [QueryCatalog]");
 
-                MDXDataCache cache = new MDXDataCache(entry.getAttribute(NAMEATTRIBUTE), connection, entry.getAttribute(QUERYATTRIBUTE), srid, entry.getAttribute(COLUMNATTRIBUTE), entry.getAttribute(TYPEATTRIBUTE), refresh);
-                entry.setCache(cache);
-                catalog.put(cache.getTypeName(), entry);
+                CellSetAxis rowAxis = catResult.getAxes().get(ROWAXIS);
+                for (Position rowPos : rowAxis.getPositions())
+                {
+                    MDXCatalogEntry entry = new MDXCatalogEntry();
+                    for (Member member : rowPos.getMembers())
+                    {
+                        entry.addAttribute((String) (member.getDimension().getName()), member.getName());
+                    }
+
+                    MDXDataCache cache = new MDXDataCache(entry.getAttribute(NAMEATTRIBUTE), connection, entry.getAttribute(QUERYATTRIBUTE), srid,
+                                                          entry.getAttribute(COLUMNATTRIBUTE), entry.getAttribute(TYPEATTRIBUTE), entry.getAttribute(COLUMNTYPE), refresh, processor);
+                    entry.setCache(cache);
+                    catalog.put(cache.getTypeName(), entry);
+                }
+                LOGGER.fine("Loaded OLAP query catalog");
             }
-            LOGGER.fine("Loaded OLAP query catalog");
-        }
-        catch (Throwable e)
-        {
-            LOGGER.warning("General Error reading the query catalog from MDX");
-            e.printStackTrace();
+            catch (Throwable e)
+            {
+                LOGGER.warning("General Error reading the query catalog from MDX");
+                e.printStackTrace();
+            }
         }
     }
 }

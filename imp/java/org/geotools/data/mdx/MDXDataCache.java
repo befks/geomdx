@@ -24,6 +24,7 @@ import org.opengis.feature.simple.SimpleFeature;
 import org.opengis.feature.simple.SimpleFeatureType;
 import org.opengis.filter.Filter;
 
+import com.vividsolutions.jts.geom.Geometry;
 import com.vividsolutions.jts.geom.GeometryFactory;
 import com.vividsolutions.jts.geom.PrecisionModel;
 
@@ -52,11 +53,14 @@ public class MDXDataCache
     /** The SRID. */
     private int srid = 0;
 
-    /** The name of the column containing the WKT string. */
+    /** The name of the column to be used to obtain the Geometry. */
     private String wktColumn = null;
 
     /** The Geometry type of that column. */
     private String geometryType = null;
+
+    /** The extra type of the WKT column. */
+    private String columnType = null;
 
     /** The maximum amount of hours the data is kept in the cache. */
     private long maxHours = 0;
@@ -70,6 +74,9 @@ public class MDXDataCache
     /** The list of available features. */
     private List<SimpleFeature> features = new ArrayList<SimpleFeature>();
 
+    /** The processor to use, if any. */
+    private MDXGeometryProcessor processor = null;
+
     // ===========================================================================
     /**
      * Creates an instance.
@@ -78,19 +85,23 @@ public class MDXDataCache
      * @param connection The active connection.
      * @param mdxQuery The query to execute.
      * @param srid The SRID.
-     * @param wktColumn The column containing the WKT String.
+     * @param wktColumn The column to obtain the Geometry.
+     * @param columnType The type of that column.
      * @param geometryType The geometry type of that column.
      * @param maxHours The max amount of hours the resultset is kept in memory.
+     * @param processor The processor to use. (if any).
      */
-    public MDXDataCache(String typeName, OlapConnection connection, String mdxQuery, String srid, String wktColumn, String geometryType, int maxHours)
+    public MDXDataCache(String typeName, OlapConnection connection, String mdxQuery, String srid, String wktColumn, String geometryType, String columnType, int maxHours, MDXGeometryProcessor processor)
     {
         this.typeName = typeName;
         this.connection = connection;
         this.mdxQuery = mdxQuery;
+        this.columnType = columnType;
         this.srid = Integer.parseInt(srid.split(":")[1]);
         this.wktColumn = wktColumn;
         this.geometryType = geometryType;
         this.maxHours = maxHours * 3600 * 100; // Convert to millis for ease of use.
+        this.processor = processor;
     }
 
     // ===========================================================================
@@ -179,30 +190,28 @@ public class MDXDataCache
 
                     OlapStatement stmt = connection.createStatement();
                     CellSet result = stmt.executeOlapQuery(mdxQuery);
-                    StringBuffer out = new StringBuffer("MDXFeatureReader:INIT: ").append(typeName).append("\n");
 
                     StringBuffer attributes = new StringBuffer("");
                     List<Hierarchy> hiers = result.getAxes().get(ROWAXIS).getAxisMetaData().getHierarchies();
+
+                    // This feature will contain the geometry object.
                     for (Hierarchy hier : hiers)
                     {
-                        if (!hier.getName().equals(this.wktColumn))
-                        {
-                            out.append(" H - ").append(hier.getName()).append("\n");
+                        if (processor != null || !hier.getName().equals(wktColumn))
                             attributes.append(hier.getName() + ":String,");
-                        }
                     }
+
+                    String check = mdxQuery.toLowerCase();
 
                     NamedList<Member> members = result.getAxes().get(COLUMNAXIS).getAxisMetaData().getHierarchies().get(0).getRootMembers();
                     for (Member memb : members)
                     {
-                        if (mdxQuery.indexOf("[" + memb.getName() + "]") > -1)
-                        {
-                            out.append(" M - ").append(memb.getName()).append("\n");
+                        if (check.indexOf(memb.getName().toLowerCase()) > -1)
                             attributes.append(memb.getName() + ":Float,");
-                        }
                     }
                     attributes.deleteCharAt(attributes.length() - 1);
-                    featureType = DataUtilities.createType(typeName, wktColumn + ":" + geometryType + ":srid=" + srid + "," + attributes);
+                    if (processor != null) featureType = DataUtilities.createType(typeName, "MDXGeometry:" + geometryType + ":srid=" + srid + "," + attributes);
+                    else featureType = DataUtilities.createType(typeName, wktColumn + ":" + geometryType + ":srid=" + srid + "," + attributes);
 
                     processCellSet(result);
                     lastRefresh = System.currentTimeMillis();
@@ -240,10 +249,20 @@ public class MDXDataCache
                 for (Member member : rowPos.getMembers())
                 {
                     String dimName = member.getUniqueName().split("\\[|\\]")[1];
-
                     if (dimName.equals(this.wktColumn))
                     {
-                        feature.setAttribute(this.wktColumn, reader.read((String) (member.getName())));
+                        Geometry geom = null;
+                        if (processor != null)
+                        {
+                            geom = processor.getWKTString(member.getName(), wktColumn, columnType);
+                            feature.setAttribute(this.wktColumn, member.getName());
+                            feature.setAttribute("MDXGeometry", geom);
+                        }
+                        else
+                        {
+                            geom = reader.read(member.getName());
+                            feature.setAttribute(this.wktColumn, geom);
+                        }
                     }
                     else
                     {

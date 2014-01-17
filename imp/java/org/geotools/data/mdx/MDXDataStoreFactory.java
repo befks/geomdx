@@ -2,6 +2,8 @@ package org.geotools.data.mdx;
 
 import java.io.IOException;
 import java.io.Serializable;
+import java.security.AccessController;
+import java.security.PrivilegedAction;
 import java.util.Map;
 
 import org.geotools.data.DataStore;
@@ -26,6 +28,8 @@ public class MDXDataStoreFactory implements DataStoreFactorySpi
     public static final Param PASSWORD = new Param("password", String.class, "Password", false);
     public static final Param REFRESH = new Param("refresh", String.class, "The max amount of hours the result of an Olap query is cached", true, "4");
     public static final Param SRID = new Param("srid", String.class, "The srid used by this store", true, "EPSG:4326");
+    public static final Param PROCESSOR = new Param("GeometryProcessor", String.class, "The class name of the Geometry Processor", false);
+    public static final Param PROCESSORCONFIG = new Param("GeometryProcessorConfig", String.class, "The config of the Geometry Processor", false);
 
     /*
      * Returns a new MDX data store from a Map of parameters
@@ -43,13 +47,37 @@ public class MDXDataStoreFactory implements DataStoreFactorySpi
         String password = (String) PASSWORD.lookUp(params);
         String srid = (String) SRID.lookUp(params);
         String refresh = (String) REFRESH.lookUp(params);
+        final String processorName = (String) PROCESSOR.lookUp(params);
+        String config = (String) PROCESSORCONFIG.lookUp(params);
 
         if (this.canProcess(params))
         {
             try
             {
                 int ref = Integer.parseInt(refresh);
-                MDXCachedDataStore store = new MDXCachedDataStore(server, provider, datasource, catalog, user, password, srid, ref);
+                MDXGeometryProcessor processor = null;
+                if (processorName != null)
+                {
+                    processor = AccessController.doPrivileged(new PrivilegedAction<MDXGeometryProcessor>()
+                    {
+                        @Override
+                        public MDXGeometryProcessor run()
+                        {
+                            try
+                            {
+                                return (MDXGeometryProcessor) Class.forName(processorName).newInstance();
+                            }
+                            catch (Throwable e)
+                            {
+                                e.printStackTrace();
+                                return null;
+                            }
+                        }
+                    });
+                    if (processor != null) processor.initialize(config, Integer.parseInt(srid.split(":")[1]));
+                }
+
+                MDXCachedDataStore store = new MDXCachedDataStore(server, provider, datasource, catalog, user, password, srid, ref, processor);
                 return store;
             }
             catch (Throwable e)
@@ -87,7 +115,11 @@ public class MDXDataStoreFactory implements DataStoreFactorySpi
          && params.get("catalog") != null && params.get("refresh") != null && params.get("srid") != null)
         {
             if (params.get("user") != null && params.get("password") == null) return false;
-            else return true;
+            else
+            {
+                if (params.get("GeometryProcessor") != null && params.get("GeometryProcessorConfig") == null) return false;
+                else return true;
+            }
         }
 
         return false;
@@ -120,7 +152,7 @@ public class MDXDataStoreFactory implements DataStoreFactorySpi
      */
     public Param[] getParametersInfo()
     {
-        return new Param[] {NAMESPACEURI, SERVER, PROVIDER, DATASOURCE, CATALOG, USER, PASSWORD, REFRESH, SRID};
+        return new Param[] {NAMESPACEURI, SERVER, PROVIDER, DATASOURCE, CATALOG, USER, PASSWORD, REFRESH, SRID, PROCESSOR, PROCESSORCONFIG};
     }
 
     public boolean isAvailable()

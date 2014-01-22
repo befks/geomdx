@@ -92,6 +92,9 @@ public class MDXCachedDataStore extends AbstractDataStore
     /** The processor to use, if any. */
     private MDXGeometryProcessor processor = null;
 
+    /** The timestamp of the last refresh. */
+    private long lastRefresh = 0;
+
     // ===========================================================================
     /**
      * Creates an instance.
@@ -157,10 +160,11 @@ public class MDXCachedDataStore extends AbstractDataStore
     {
         try
         {
+            LOGGER.fine("MDX: Disposing MDX DataStore.");
+            catalog.clear();
             if (connection != null)
             {
                 connection.close();
-                catalog.clear();
                 LOGGER.fine("Connection with the MDX data source " + olapDataSource + " closed");
             }
         }
@@ -244,38 +248,41 @@ public class MDXCachedDataStore extends AbstractDataStore
      */
     private synchronized void loadCatalogEntries()
     {
-        connect();
-        catalog.clear();
-        OlapStatement statement;
-
-        try
+        if (catalog.isEmpty() || (System.currentTimeMillis() - lastRefresh > 30000))
         {
-            statement = this.connection.createStatement();
-            CellSet catResult = statement.executeOlapQuery("SELECT NON EMPTY {Hierarchize({[Measures].[MDX]})} ON COLUMNS, "
-                    + "NON EMPTY CrossJoin([Name].[Name].Members, CrossJoin([MDX].[MDX].Members, "
-                    + "CrossJoin([GeometryColumn].[GeometryColumn].Members, CrossJoin([ColumnType].[ColumnType].Members, "
-                    + "[GeometryType].[GeometryType].Members)))) ON ROWS FROM [QueryCatalog]");
+            connect();
+            OlapStatement statement;
 
-            CellSetAxis rowAxis = catResult.getAxes().get(ROWAXIS);
-            for (Position rowPos : rowAxis.getPositions())
+            try
             {
-                MDXCatalogEntry entry = new MDXCatalogEntry();
-                for (Member member : rowPos.getMembers())
-                {
-                    entry.addAttribute((String) (member.getDimension().getName()), member.getName());
-                }
+                statement = this.connection.createStatement();
+                CellSet catResult = statement.executeOlapQuery("SELECT NON EMPTY {Hierarchize({[Measures].[MDX]})} ON COLUMNS, "
+                        + "NON EMPTY CrossJoin([Name].[Name].Members, CrossJoin([MDX].[MDX].Members, "
+                        + "CrossJoin([GeometryColumn].[GeometryColumn].Members, CrossJoin([ColumnType].[ColumnType].Members, "
+                        + "[GeometryType].[GeometryType].Members)))) ON ROWS FROM [QueryCatalog]");
 
-                MDXDataCache cache = new MDXDataCache(entry.getAttribute(NAMEATTRIBUTE), connection, entry.getAttribute(QUERYATTRIBUTE), srid,
-                        entry.getAttribute(COLUMNATTRIBUTE), entry.getAttribute(TYPEATTRIBUTE), entry.getAttribute(COLUMNTYPE), refresh, processor);
-                entry.setCache(cache);
-                catalog.put(cache.getTypeName(), entry);
+                CellSetAxis rowAxis = catResult.getAxes().get(ROWAXIS);
+                for (Position rowPos : rowAxis.getPositions())
+                {
+                    MDXCatalogEntry entry = new MDXCatalogEntry();
+                    for (Member member : rowPos.getMembers())
+                    {
+                        entry.addAttribute((String) (member.getDimension().getName()), member.getName());
+                    }
+
+                    MDXDataCache cache = new MDXDataCache(entry.getAttribute(NAMEATTRIBUTE), connection, entry.getAttribute(QUERYATTRIBUTE), srid,
+                            entry.getAttribute(COLUMNATTRIBUTE), entry.getAttribute(TYPEATTRIBUTE), entry.getAttribute(COLUMNTYPE), refresh, processor);
+                    entry.setCache(cache);
+                    catalog.put(cache.getTypeName(), entry);
+                }
+                LOGGER.fine("Loaded OLAP query catalog");
+                lastRefresh = System.currentTimeMillis();
             }
-            LOGGER.fine("Loaded OLAP query catalog");
-        }
-        catch (Throwable e)
-        {
-            LOGGER.warning("General Error reading the query catalog from MDX");
-            e.printStackTrace();
+            catch (Throwable e)
+            {
+                LOGGER.warning("General Error reading the query catalog from MDX");
+                e.printStackTrace();
+            }
         }
     }
 }

@@ -206,8 +206,16 @@ public class MDXDataCache
                     NamedList<Member> members = result.getAxes().get(COLUMNAXIS).getAxisMetaData().getHierarchies().get(0).getRootMembers();
                     for (Member memb : members)
                     {
-                        if (check.indexOf(memb.getName().toLowerCase()) > -1)
-                            attributes.append(memb.getName() + ":Float,");
+                        if (!memb.getMemberType().name().equals("ALL"))
+                        {
+                            if (check.indexOf(memb.getName().toLowerCase()) > -1)
+                                attributes.append(memb.getName() + ":Float,");
+                        }
+                        else
+                        {
+                            for (Member mm : memb.getChildMembers())
+                                attributes.append(mm.getName() + ":Float,");
+                        }
                     }
                     attributes.deleteCharAt(attributes.length() - 1);
                     if (processor != null) featureType = DataUtilities.createType(typeName, "MDXGeometry:" + geometryType + ":srid=" + srid + "," + attributes);

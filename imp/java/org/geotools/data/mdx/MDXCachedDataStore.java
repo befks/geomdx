@@ -84,7 +84,10 @@ public class MDXCachedDataStore extends AbstractDataStore
     private String srid = null;
 
     /** The map of catalog entries indexed on their type name. */
-    private Map<String, MDXCatalogEntry> catalog = new HashMap<String, MDXCatalogEntry>();
+    private static Map<String, MDXCatalogEntry> catalog = new HashMap<String, MDXCatalogEntry>();
+
+    /** Map of query names indexed on the query. */
+    private static Map<String, String> queries = new HashMap<String, String>();
 
     /** The active connection. */
     private OlapConnection connection = null;
@@ -119,7 +122,7 @@ public class MDXCachedDataStore extends AbstractDataStore
         this.olapProvider = olapProvider;
         this.olapServer = olapServer;
         this.olapUser = olapUser;
-        this.refresh = refresh;
+        this.refresh = refresh * 3600 * 1000; // millis in hours.
         this.srid = srid;
         this.processor = processor;
 
@@ -270,10 +273,18 @@ public class MDXCachedDataStore extends AbstractDataStore
                         entry.addAttribute((String) (member.getDimension().getName()), member.getName());
                     }
 
-                    MDXDataCache cache = new MDXDataCache(entry.getAttribute(NAMEATTRIBUTE), connection, entry.getAttribute(QUERYATTRIBUTE), srid,
+                    StringBuilder b = new StringBuilder();
+                    b.append(entry.getAttribute(NAMEATTRIBUTE)).append(entry.getAttribute(QUERYATTRIBUTE));
+                    b.append(entry.getAttribute(COLUMNATTRIBUTE)).append(entry.getAttribute(TYPEATTRIBUTE)).append(entry.getAttribute(COLUMNTYPE));
+                    String uid = b.toString();
+                    if (!queries.containsKey(uid))
+                    {
+                        MDXDataCache cache = new MDXDataCache(entry.getAttribute(NAMEATTRIBUTE), connection, entry.getAttribute(QUERYATTRIBUTE), srid,
                             entry.getAttribute(COLUMNATTRIBUTE), entry.getAttribute(TYPEATTRIBUTE), entry.getAttribute(COLUMNTYPE), refresh, processor);
-                    entry.setCache(cache);
-                    catalog.put(cache.getTypeName(), entry);
+                        entry.setCache(cache);
+                        catalog.put(cache.getTypeName(), entry);
+                        queries.put(uid, cache.getTypeName());
+                    }
                 }
                 LOGGER.fine("Loaded OLAP query catalog");
                 lastRefresh = System.currentTimeMillis();

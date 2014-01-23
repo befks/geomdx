@@ -100,7 +100,7 @@ public class MDXDataCache
         this.srid = Integer.parseInt(srid.split(":")[1]);
         this.wktColumn = wktColumn;
         this.geometryType = geometryType;
-        this.maxHours = maxHours * 3600 * 1000; // Convert to millis for ease of use.
+        this.maxHours = maxHours;
         this.processor = processor;
     }
 
@@ -208,7 +208,7 @@ public class MDXDataCache
                     {
                         if (!memb.getMemberType().name().equals("ALL"))
                         {
-                            String membName = "[" + memb.getLevel() + "].[" + memb.getName() + "]";
+                            String membName = "[" + memb.getHierarchy().getName() + "].[" + memb.getName() + "]";
                             if (check.indexOf(membName.toLowerCase()) > -1)
                                 attributes.append(memb.getName() + ":Float,");
                         }
